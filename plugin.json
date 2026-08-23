@@ -1,0 +1,10 @@
+{
+  "name": "PadPilot",
+  "author": "Starkka15",
+  "flags": [],
+  "publish": {
+    "tags": ["Controller", "Steam Input", "Profiles"],
+    "description": "Turn Controller Companion (.ccp) Workshop profiles into Steam Input configs, without leaving Game Mode.",
+    "image": ""
+  }
+}
