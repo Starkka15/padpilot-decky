@@ -267,13 +267,27 @@ def convert(profile: Profile, controller_type: str = "controller_neptune") -> Co
         else:
             dropped.append(f"{modifier}: cannot host the secondary layer")
 
+    title = f"{profile.name} (Controller Companion)"
     lines = [
         '"controller_mappings"',
         "{",
         '\t"version"\t\t"3"',
-        f'\t"title"\t\t"{profile.name} (from Controller Companion)"',
-        f'\t"description"\t\t"Converted from {profile.source or "a .ccp profile"} by PadPilot"',
+        f'\t"title"\t\t"{title}"',
+        f'\t"description"\t\t"Converted from a .ccp profile by PadPilot"',
+        '\t"export_type"\t\t"template"',
         f'\t"controller_type"\t\t"{controller_type}"',
+        # The base action set has to be declared, not just referenced. Without
+        # it the layer's parent_set_name points at nothing and Steam merges the
+        # layer's groups into the base state — the symptom was a secondary
+        # binding (volume) firing without the modifier held.
+        '\t"actions"',
+        "\t{",
+        '\t\t"Default"',
+        "\t\t{",
+        '\t\t\t"title"\t\t"Default"',
+        '\t\t\t"legacy_set"\t\t"1"',
+        "\t\t}",
+        "\t}",
     ]
     if layer_groups:
         lines += [
@@ -288,6 +302,17 @@ def convert(profile: Profile, controller_type: str = "controller_neptune") -> Co
             "\t\t}",
             "\t}",
         ]
+
+    lines += [
+        '\t"localization"',
+        "\t{",
+        '\t\t"english"',
+        "\t\t{",
+        f'\t\t\t"title"\t\t"{title}"',
+        '\t\t\t"description"\t\t"Converted from a Controller Companion profile."',
+        "\t\t}",
+        "\t}",
+    ]
 
     for gid, source, mode, inputs in main_groups + layer_groups:
         lines.append('\t"group"')
