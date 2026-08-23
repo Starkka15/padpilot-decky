@@ -88,6 +88,21 @@ BUTTON_LAYOUT = {
 
 STICK_DIRECTIONS = ["dpad_north", "dpad_south", "dpad_west", "dpad_east"]
 
+# Steam shows a template only for the controller type it declares, and the type
+# has to match exactly: a Steam Deck's built-in pad is `controller_neptune`,
+# NOT `controller_steamdeck`, which is why a config written for the latter never
+# appeared in the UI. Rather than guess, write one copy per common type — each
+# is only listed for its own controller, so the extras are invisible.
+DEFAULT_CONTROLLER_TYPES = [
+    "controller_neptune",       # Steam Deck built-in
+    "controller_xboxone",
+    "controller_xbox360",
+    "controller_ps5",
+    "controller_ps4",
+    "controller_switch_pro",
+    "controller_generic",
+]
+
 
 @dataclass
 class Conversion:
@@ -143,7 +158,7 @@ def steam_template_dirs() -> list:
             if (r / "controller_base/templates").is_dir()]
 
 
-def convert(profile: Profile, controller_type: str = "controller_steamdeck") -> Conversion:
+def convert(profile: Profile, controller_type: str = "controller_neptune") -> Conversion:
     """Build a Steam Input config from a parsed `.ccp` profile."""
     dropped: list[str] = []
     # source -> (mode, {input name: binding})

@@ -13,7 +13,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "py_modules"))
 
 from padpilot_core import ccp  # noqa: E402
-from padpilot_core.steaminput import convert  # noqa: E402
+from padpilot_core.steaminput import DEFAULT_CONTROLLER_TYPES, convert  # noqa: E402
 
 WORKSHOP_APP_ID = "367670"          # Controller Companion
 STEAM_ROOTS = [
@@ -84,11 +84,22 @@ def _safe_name(name):
     return "".join(c if c.isalnum() else "_" for c in name).strip("_").lower() or "profile"
 
 
-def _installed_path(name):
-    dirs = _template_dirs()
-    if not dirs:
-        return None
-    return os.path.join(dirs[0], f"controller_padpilot_{_safe_name(name)}.vdf")
+def _installed_paths(name):
+    """Every file we would have written for this profile.
+
+    Steam lists a template only for the controller type it declares, and the
+    Deck's built-in pad is `controller_neptune` — a config written for
+    `controller_steamdeck` simply never appears. So one copy is written per
+    common type; each shows up only for its own controller.
+    """
+    safe = _safe_name(name)
+    out = []
+    for d in _template_dirs():
+        for ctype in DEFAULT_CONTROLLER_TYPES:
+            short = ctype.replace("controller_", "")
+            out.append((os.path.join(d, f"controller_padpilot_{safe}__{short}.vdf"),
+                        ctype))
+    return out
 
 
 class Plugin:
@@ -115,14 +126,15 @@ class Plugin:
                         "bindings": 0, "dropped": [], "installed": False,
                     })
                     continue
-                installed = _installed_path(profile.name)
+                installed = any(os.path.exists(p)
+                                for p, _ in _installed_paths(profile.name))
                 out.append({
                     "id": entry,
                     "title": profile.name,
                     "processes": profile.processes,
                     "bindings": len(profile.bindings),
                     "dropped": result.dropped,
-                    "installed": bool(installed and os.path.exists(installed)),
+                    "installed": installed,
                     "path": path,
                 })
         return {"profiles": out, "workshop_dirs": _workshop_dirs(),
@@ -136,15 +148,14 @@ class Plugin:
         except Exception as exc:
             return {"ok": False, "error": f"could not convert: {exc}"}
 
-        targets = _template_dirs()
+        targets = _installed_paths(profile.name)
         if not targets:
             return {"ok": False, "error": "no Steam templates directory found"}
         written = []
-        for d in targets:
-            dest = os.path.join(d, f"controller_padpilot_{_safe_name(profile.name)}.vdf")
+        for dest, ctype in targets:
             try:
                 with open(dest, "w") as fh:
-                    fh.write(result.vdf)
+                    fh.write(convert(profile, controller_type=ctype).vdf)
                 written.append(dest)
             except OSError as exc:
                 return {"ok": False, "error": f"writing {dest}: {exc}"}
@@ -164,8 +175,7 @@ class Plugin:
 
     async def remove_profile(self, title: str) -> dict:
         removed = []
-        for d in _template_dirs():
-            path = os.path.join(d, f"controller_padpilot_{_safe_name(title)}.vdf")
+        for path, _ in _installed_paths(title):
             if os.path.exists(path):
                 try:
                     os.remove(path)
