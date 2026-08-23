@@ -110,8 +110,31 @@ class Conversion:
     dropped: list = field(default_factory=list)
 
 
+# `.ccp` command verbs that Steam has a native action for. Tokens verified
+# against Steam's own templates and the client binary, not guessed.
+NATIVE_ACTIONS = {
+    "turnoffcontroller": "controller_action controller_poweroff",
+    "steam://open/bigpicture": "controller_action bigpicture_open",
+}
+
+
 def _binding_for(action: str, args: list[str], label: str) -> str | None:
     """One `.ccp` action as a Steam binding string, or None if it has no equivalent."""
+    if action == "virtualkeyboard":
+        # Steam has its own on-screen keyboard, which is what the profile wants
+        return "controller_action SHOW_KEYBOARD"
+    if action == "cmd":
+        verb = (args[0] if args else "").lower()
+        if verb == "keycombo":
+            # just a chord — exactly what key_press already expresses
+            return _binding_for("key", ["+".join(args[1:])], label)
+        if verb in NATIVE_ACTIONS:
+            return NATIVE_ACTIONS[verb]
+        if verb == "process":
+            target = " ".join(args[1:]).strip().lower()
+            if target in NATIVE_ACTIONS:
+                return NATIVE_ACTIONS[target]
+        return None
     if action == "key":
         keys = [k for a in args for k in a.split("+")]
         tokens = [KEY_TO_STEAM.get(k.strip().upper()) for k in keys]
@@ -159,52 +182,90 @@ def steam_template_dirs() -> list:
 
 
 def convert(profile: Profile, controller_type: str = "controller_neptune") -> Conversion:
-    """Build a Steam Input config from a parsed `.ccp` profile."""
+    """Build a Steam Input config from a parsed `.ccp` profile.
+
+    The `.ccp` secondary layer (bindings held behind a modifier button) maps
+    onto a Steam **action layer**: a second preset whose groups replace the base
+    ones while a button is held. The pattern — an `action_layers` block naming a
+    preset with `set_layer 1`, that preset carrying its own groups, and
+    `controller_action hold_layer <preset id + 1> 1 1` on the modifier — was
+    taken from a working config rather than guessed.
+    """
     dropped: list[str] = []
-    # source -> (mode, {input name: binding})
-    groups: dict[str, tuple[str, dict]] = {}
 
-    def put(source: str, mode: str, input_name: str, binding: str) -> None:
-        groups.setdefault(source, (mode, {}))[1][input_name] = binding
+    def build(bindings, first_group_id):
+        """Turn a set of bindings into groups. Returns (groups, next free id)."""
+        groups: dict[str, tuple[str, dict]] = {}
 
-    for b in profile.bindings:
-        if b.layer == "back":
-            dropped.append(f"{b.input} (secondary layer): {b.label}")
-            continue
-        if b.action in ("null", "modifier"):
-            continue
-        if b.action in ("cmd", "virtualkeyboard"):
-            dropped.append(f"{b.input}: {b.label} [{b.action} {' '.join(b.args)}]")
-            continue
+        def put(source, mode, input_name, binding):
+            groups.setdefault(source, (mode, {}))[1][input_name] = binding
 
-        if b.is_stick:
-            source = "joystick" if b.input == "left stick" else "right_joystick"
-            sub = (b.args[0] if b.args else "").lower()
-            if b.action == "mouse" and sub == "movement":
-                groups.setdefault(source, ("joystick_mouse", {}))
+        for b in bindings:
+            if b.action in ("null", "modifier"):
                 continue
-            if b.action == "key" and len(b.args) >= 4:
-                # four keys, in .ccp order: up, down, left, right
-                for direction, key in zip(STICK_DIRECTIONS, b.args[:4]):
-                    binding = _binding_for("key", [key], "")
-                    if binding:
-                        put(source, "dpad", direction, binding)
-                    else:
-                        dropped.append(f"{b.input} {direction}: {key} (no Steam key)")
-                continue
-            dropped.append(f"{b.input}: {b.label} [{b.action} {' '.join(b.args)}]")
-            continue
 
-        placement = BUTTON_LAYOUT.get(b.input)
-        if placement is None:
-            dropped.append(f"{b.input}: {b.label} (no Steam equivalent)")
-            continue
-        source, input_name, mode = placement
-        binding = _binding_for(b.action, b.args, b.label)
-        if binding is None:
-            dropped.append(f"{b.input}: {b.label} [{b.action} {' '.join(b.args)}]")
-            continue
-        put(source, mode, input_name, binding)
+            if b.is_stick:
+                source = "joystick" if b.input == "left stick" else "right_joystick"
+                sub = (b.args[0] if b.args else "").lower()
+                if b.action == "mouse" and sub == "movement":
+                    groups.setdefault(source, ("joystick_mouse", {}))
+                    continue
+                if b.action == "key" and len(b.args) >= 4:
+                    for direction, key in zip(STICK_DIRECTIONS, b.args[:4]):
+                        binding = _binding_for("key", [key], "")
+                        if binding:
+                            put(source, "dpad", direction, binding)
+                        else:
+                            dropped.append(f"{b.input} {direction}: {key} (no Steam key)")
+                    continue
+                dropped.append(f"{b.input}: {b.label} [{b.action} {' '.join(b.args)}]")
+                continue
+
+            placement = BUTTON_LAYOUT.get(b.input)
+            if placement is None:
+                dropped.append(f"{b.input}: {b.label} (no Steam equivalent)")
+                continue
+            source, input_name, mode = placement
+            binding = _binding_for(b.action, b.args, b.label)
+            if binding is None:
+                dropped.append(f"{b.input}: {b.label} [{b.action} {' '.join(b.args)}]")
+                continue
+            put(source, mode, input_name, binding)
+
+        numbered = []
+        gid = first_group_id
+        for source, (mode, inputs) in sorted(groups.items()):
+            numbered.append((gid, source, mode, inputs))
+            gid += 1
+        return numbered, gid
+
+    main_bindings = [b for b in profile.bindings if b.layer == "main"]
+    back_bindings = [b for b in profile.bindings if b.layer == "back"]
+
+    # The modifier itself must activate the layer instead of typing something.
+    modifier = profile.back_modifier_input or ("backbutton" if back_bindings else None)
+    if modifier:
+        main_bindings = [b for b in main_bindings if b.input != modifier]
+
+    main_groups, next_id = build(main_bindings, 0)
+    layer_groups, _ = build(back_bindings, next_id) if back_bindings else ([], next_id)
+
+    # hold the modifier -> layer preset (id 1), so its arg is 2
+    if back_bindings and modifier:
+        placement = BUTTON_LAYOUT.get(modifier)
+        if placement:
+            source, input_name, mode = placement
+            for gid, gsource, gmode, inputs in main_groups:
+                if gsource == source:
+                    inputs[input_name] = "controller_action hold_layer 2 1 1, , "
+                    break
+            else:
+                main_groups.append(
+                    (next_id, source, mode,
+                     {input_name: "controller_action hold_layer 2 1 1, , "}))
+                next_id += 1
+        else:
+            dropped.append(f"{modifier}: cannot host the secondary layer")
 
     lines = [
         '"controller_mappings"',
@@ -214,12 +275,24 @@ def convert(profile: Profile, controller_type: str = "controller_neptune") -> Co
         f'\t"description"\t\t"Converted from {profile.source or "a .ccp profile"} by PadPilot"',
         f'\t"controller_type"\t\t"{controller_type}"',
     ]
-    bindings_by_id: dict[int, str] = {}
-    for group_id, (source, (mode, inputs)) in enumerate(sorted(groups.items())):
-        bindings_by_id[group_id] = source
+    if layer_groups:
+        lines += [
+            '\t"action_layers"',
+            "\t{",
+            '\t\t"Preset_1000001"',
+            "\t\t{",
+            '\t\t\t"title"\t\t"Secondary (hold the modifier)"',
+            '\t\t\t"legacy_set"\t\t"1"',
+            '\t\t\t"set_layer"\t\t"1"',
+            '\t\t\t"parent_set_name"\t\t"Default"',
+            "\t\t}",
+            "\t}",
+        ]
+
+    for gid, source, mode, inputs in main_groups + layer_groups:
         lines.append('\t"group"')
         lines.append("\t{")
-        lines.append(f'\t\t"id"\t\t"{group_id}"')
+        lines.append(f'\t\t"id"\t\t"{gid}"')
         lines.append(f'\t\t"mode"\t\t"{mode}"')
         lines.append('\t\t"inputs"')
         lines.append("\t\t{")
@@ -228,16 +301,17 @@ def convert(profile: Profile, controller_type: str = "controller_neptune") -> Co
         lines.append("\t\t}")
         lines.append("\t}")
 
-    lines.append('\t"preset"')
-    lines.append("\t{")
-    lines.append('\t\t"id"\t\t"0"')
-    lines.append('\t\t"name"\t\t"Default"')
-    lines.append('\t\t"group_source_bindings"')
-    lines.append("\t\t{")
-    for group_id, source in bindings_by_id.items():
-        lines.append(f'\t\t\t"{group_id}"\t\t"{source} active"')
-    lines.append("\t\t}")
-    lines.append("\t}")
+    def preset(pid, name, groups):
+        block = ['\t"preset"', "\t{", f'\t\t"id"\t\t"{pid}"',
+                 f'\t\t"name"\t\t"{name}"', '\t\t"group_source_bindings"', "\t\t{"]
+        for gid, source, _mode, _inputs in groups:
+            block.append(f'\t\t\t"{gid}"\t\t"{source} active"')
+        block += ["\t\t}", "\t}"]
+        return block
+
+    lines += preset(0, "Default", main_groups)
+    if layer_groups:
+        lines += preset(1, "Preset_1000001", layer_groups)
     lines.append("}")
     return Conversion(vdf="\n".join(lines) + "\n", dropped=dropped)
 
