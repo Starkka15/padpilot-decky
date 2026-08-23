@@ -25,11 +25,25 @@ STEAM_ROOTS = [
 
 
 def _expand(path):
-    return os.path.abspath(os.path.expanduser(path))
+    # realpath, not abspath: on SteamOS ~/.steam/steam is a symlink to
+    # ~/.local/share/Steam, so both spellings are the same directory. Without
+    # resolving, every profile is found twice and every install is written
+    # twice — the device reported 22 subscribed profiles for 11 files.
+    return os.path.realpath(os.path.expanduser(path))
+
+
+def _dedupe(paths):
+    seen, out = set(), []
+    for p in paths:
+        real = os.path.realpath(p)
+        if real not in seen:
+            seen.add(real)
+            out.append(real)
+    return out
 
 
 def _steam_roots():
-    return [_expand(r) for r in STEAM_ROOTS if os.path.isdir(_expand(r))]
+    return _dedupe([_expand(r) for r in STEAM_ROOTS if os.path.isdir(_expand(r))])
 
 
 def _library_paths():
@@ -47,25 +61,23 @@ def _library_paths():
         for m in re.finditer(r'"path"\s+"([^"]+)"', text):
             if os.path.isdir(m.group(1)):
                 found.append(m.group(1))
-    unique = []
-    for f in found:
-        if f not in unique:
-            unique.append(f)
-    return unique
+    return _dedupe(found)
 
 
 def _workshop_dirs():
-    dirs = []
-    for lib in _library_paths():
-        d = os.path.join(lib, "steamapps", "workshop", "content", WORKSHOP_APP_ID)
-        if os.path.isdir(d):
-            dirs.append(d)
-    return dirs
+    return _dedupe([
+        os.path.join(lib, "steamapps", "workshop", "content", WORKSHOP_APP_ID)
+        for lib in _library_paths()
+        if os.path.isdir(os.path.join(lib, "steamapps", "workshop", "content",
+                                      WORKSHOP_APP_ID))
+    ])
 
 
 def _template_dirs():
-    return [os.path.join(r, "controller_base", "templates") for r in _steam_roots()
-            if os.path.isdir(os.path.join(r, "controller_base", "templates"))]
+    return _dedupe([
+        os.path.join(r, "controller_base", "templates") for r in _steam_roots()
+        if os.path.isdir(os.path.join(r, "controller_base", "templates"))
+    ])
 
 
 def _safe_name(name):

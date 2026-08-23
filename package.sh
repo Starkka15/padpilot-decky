@@ -10,6 +10,9 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/PadPilot"
 cp -r "$HERE/dist" "$HERE/py_modules" "$STAGE/PadPilot/"
+# 1.4 MB of sourcemap is not worth shipping; drop the dangling reference too
+rm -f "$STAGE/PadPilot/dist/"*.map
+sed -i '/sourceMappingURL/d' "$STAGE/PadPilot/dist/index.js"
 cp "$HERE/main.py" "$HERE/plugin.json" "$HERE/package.json" \
    "$HERE/README.md" "$HERE/LICENSE" "$STAGE/PadPilot/"
 find "$STAGE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true

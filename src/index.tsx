@@ -1,14 +1,13 @@
+import { callable, definePlugin } from "@decky/api";
 import {
   ButtonItem,
-  definePlugin,
   DialogButton,
   Focusable,
   PanelSection,
   PanelSectionRow,
-  ServerAPI,
   staticClasses,
-} from "decky-frontend-lib";
-import { useEffect, useState, VFC } from "react";
+} from "@decky/ui";
+import { useEffect, useState, FC } from "react";
 import { FaGamepad } from "react-icons/fa";
 
 interface ProfileEntry {
@@ -29,64 +28,70 @@ interface Status {
   ready: boolean;
 }
 
-const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
+const listProfiles = callable<[], { profiles: ProfileEntry[] }>("list_profiles");
+const installProfile = callable<[string], any>("install_profile");
+const installAll = callable<[], { installed: string[]; failed: string[] }>("install_all");
+const removeProfile = callable<[string], any>("remove_profile");
+const getStatus = callable<[], Status>("status");
+
+const Content: FC = () => {
   const [profiles, setProfiles] = useState<ProfileEntry[]>([]);
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string>("");
+  const [note, setNote] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const refresh = async () => {
-    const st = await serverAPI.callPluginMethod<{}, Status>("status", {});
-    if (st.success) setStatus(st.result);
-    const res = await serverAPI.callPluginMethod<{}, { profiles: ProfileEntry[] }>(
-      "list_profiles",
-      {}
-    );
-    if (res.success) setProfiles(res.result.profiles);
+    try {
+      setStatus(await getStatus());
+      setProfiles((await listProfiles()).profiles);
+    } catch (e) {
+      setNote(`Could not read profiles: ${e}`);
+    }
   };
 
   useEffect(() => {
     refresh();
   }, []);
 
-  const install = async (p: ProfileEntry) => {
+  const doInstall = async (p: ProfileEntry) => {
     setBusy(true);
     setNote("");
-    const res = await serverAPI.callPluginMethod<{ path: string }, any>(
-      "install_profile",
-      { path: p.path ?? "" }
-    );
-    setBusy(false);
-    if (res.success && res.result?.ok) {
-      setNote(`${p.title} installed — restart Steam, then pick it under Templates.`);
-      await refresh();
-    } else {
-      setNote(`Failed: ${res.result?.error ?? "unknown error"}`);
-    }
-  };
-
-  const installAll = async () => {
-    setBusy(true);
-    setNote("");
-    const res = await serverAPI.callPluginMethod<{}, any>("install_all", {});
-    setBusy(false);
-    if (res.success) {
-      const n = res.result.installed.length;
-      const f = res.result.failed.length;
+    try {
+      const res = await installProfile(p.path ?? "");
       setNote(
-        `Installed ${n} profile${n === 1 ? "" : "s"}${f ? `, ${f} failed` : ""}. ` +
-          `Restart Steam to see them under Templates.`
+        res?.ok
+          ? `${p.title} installed — restart Steam, then pick it under Templates.`
+          : `Failed: ${res?.error ?? "unknown error"}`
       );
-      await refresh();
+    } catch (e) {
+      setNote(`Failed: ${e}`);
     }
+    setBusy(false);
+    await refresh();
   };
 
-  const remove = async (p: ProfileEntry) => {
+  const doInstallAll = async () => {
     setBusy(true);
-    await serverAPI.callPluginMethod<{ title: string }, any>("remove_profile", {
-      title: p.title,
-    });
+    setNote("");
+    try {
+      const res = await installAll();
+      const n = res.installed.length;
+      setNote(
+        `Installed ${n} profile${n === 1 ? "" : "s"}` +
+          (res.failed.length ? `, ${res.failed.length} failed` : "") +
+          ". Restart Steam to see them under Templates."
+      );
+    } catch (e) {
+      setNote(`Failed: ${e}`);
+    }
+    setBusy(false);
+    await refresh();
+  };
+
+  const doRemove = async (p: ProfileEntry) => {
+    setBusy(true);
+    await removeProfile(p.title);
     setBusy(false);
     await refresh();
   };
@@ -96,7 +101,7 @@ const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
       <PanelSection title="PadPilot">
         <PanelSectionRow>
           {status.workshop_dirs.length === 0
-            ? "No Controller Companion profiles found. Subscribe to some on the Workshop, then come back."
+            ? "No Controller Companion profiles found. Subscribe to some on the Workshop, then press Rescan."
             : "Steam's controller templates folder wasn't found."}
         </PanelSectionRow>
       </PanelSection>
@@ -107,11 +112,15 @@ const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
     <>
       <PanelSection title={`Profiles (${profiles.length})`}>
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={busy || !profiles.length} onClick={installAll}>
+          <ButtonItem layout="below" disabled={busy || !profiles.length} onClick={doInstallAll}>
             Convert and install all
           </ButtonItem>
         </PanelSectionRow>
-        {note ? <PanelSectionRow>{note}</PanelSectionRow> : null}
+        {note ? (
+          <PanelSectionRow>
+            <div style={{ fontSize: "0.8em" }}>{note}</div>
+          </PanelSectionRow>
+        ) : null}
       </PanelSection>
 
       <PanelSection title="Subscribed">
@@ -129,26 +138,24 @@ const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
                     (p.processes?.length ? ` · ${p.processes.join(", ")}` : "")}
               </div>
               <Focusable style={{ display: "flex", gap: "6px" }}>
-                <DialogButton disabled={busy || !!p.error} onClick={() => install(p)}>
+                <DialogButton disabled={busy || !!p.error} onClick={() => doInstall(p)}>
                   {p.installed ? "Reinstall" : "Install"}
                 </DialogButton>
                 {p.installed ? (
-                  <DialogButton disabled={busy} onClick={() => remove(p)}>
+                  <DialogButton disabled={busy} onClick={() => doRemove(p)}>
                     Remove
                   </DialogButton>
                 ) : null}
                 {p.dropped.length ? (
-                  <DialogButton
-                    onClick={() => setExpanded(expanded === p.id ? null : p.id)}
-                  >
+                  <DialogButton onClick={() => setExpanded(expanded === p.id ? null : p.id)}>
                     {expanded === p.id ? "Hide" : "Details"}
                   </DialogButton>
                 ) : null}
               </Focusable>
               {expanded === p.id ? (
                 <div style={{ fontSize: "0.75em", opacity: 0.75 }}>
-                  Steam Input has no secondary layer and cannot launch programs, so
-                  these are skipped:
+                  Steam Input has no secondary layer and cannot launch programs, so these
+                  are skipped:
                   <ul style={{ margin: "4px 0 0 12px" }}>
                     {p.dropped.map((d, i) => (
                       <li key={i}>{d}</li>
@@ -178,8 +185,9 @@ const Content: VFC<{ serverAPI: ServerAPI }> = ({ serverAPI }) => {
   );
 };
 
-export default definePlugin((serverApi: ServerAPI) => ({
-  title: <div className={staticClasses.Title}>PadPilot</div>,
-  content: <Content serverAPI={serverApi} />,
+export default definePlugin(() => ({
+  name: "PadPilot",
+  titleView: <div className={staticClasses.Title}>PadPilot</div>,
+  content: <Content />,
   icon: <FaGamepad />,
 }));
